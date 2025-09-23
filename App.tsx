@@ -33,6 +33,33 @@ const { version: APP_VERSION } = require('./package.json');
 
 const Drawer = createDrawerNavigator();
 
+/* ------------------------------------------------------------------
+   🔸 Minimal persistence (same file as printer screen uses)
+   - Stores URL at RNFS.DocumentDirectoryPath/printer_prefs.json
+   - Keeps existing keys (ip, btAddress, etc.) and just adds "webUrl"
+------------------------------------------------------------------- */
+import RNFS from 'react-native-fs';
+
+const PREF_FILE = `${RNFS.DocumentDirectoryPath}/printer_prefs.json`;
+
+async function readPrefs() {
+  try {
+    const exists = await RNFS.exists(PREF_FILE);
+    if (!exists) return {};
+    const txt = await RNFS.readFile(PREF_FILE, 'utf8');
+    return JSON.parse(txt || '{}');
+  } catch {
+    return {};
+  }
+}
+async function writePrefs(partial) {
+  try {
+    const curr = await readPrefs();
+    const next = { ...curr, ...partial };
+    await RNFS.writeFile(PREF_FILE, JSON.stringify(next), 'utf8');
+  } catch {}
+}
+
 /** Home screen with in-app WebView */
 function HomeScreen({ webUrl, setWebUrl, onReceipt, latestReceipt, refreshTick }) {
   const webRef = useRef(null);
@@ -138,6 +165,17 @@ export default function App() {
   // tick to force a WebView reload from the header refresh button
   const [refreshTick, setRefreshTick] = useState(0);
 
+  // ⬇️ Load saved URL on app start
+  useEffect(() => {
+    (async () => {
+      const prefs = await readPrefs();
+      if (prefs?.webUrl && typeof prefs.webUrl === 'string') {
+        setWebUrl(prefs.webUrl);
+        setUrlText(prefs.webUrl); // prefill modal text with saved URL
+      }
+    })();
+  }, []);
+
   const openSearch = () => setUrlModalVisible(true);
   const onCancel = () => setUrlModalVisible(false);
 
@@ -146,6 +184,8 @@ export default function App() {
     if (!u) return;
     if (!/^https?:\/\//i.test(u)) u = `https://${u}`; // prepend scheme if missing
     setWebUrl(u);
+    // ⬇️ Persist it for next app launch
+    writePrefs({ webUrl: u });
     setUrlModalVisible(false);
   };
 
