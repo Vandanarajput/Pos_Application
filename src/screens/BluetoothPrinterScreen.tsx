@@ -14,10 +14,8 @@ if (typeof globalThis.structuredClone !== 'function') {
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, Button, Platform, PermissionsAndroid, Alert, ScrollView, TextInput,
-  DeviceEventEmitter,
-  TouchableOpacity,
-  StyleSheet,
+  View, Text, Platform, PermissionsAndroid, Alert, ScrollView, TextInput,
+  DeviceEventEmitter, TouchableOpacity, StyleSheet, AppState, Image
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
@@ -29,6 +27,172 @@ import TcpSocket from 'react-native-tcp-socket';
 const ReceiptPrinterEncoder =
   require('@point-of-sale/receipt-printer-encoder').default ??
   require('@point-of-sale/receipt-printer-encoder');
+
+/* ============================================================
+   🔹 ADD-ON 1: File logger (console -> file mirror, no logic change)
+   - Android: /storage/emulated/0/Download/Techsapphire/app.log
+   - iOS:     <App>/Documents/Techsapphire/app.log (Xcode container)
+============================================================ */
+const TS_PUBLIC_DIR =
+  Platform.OS === 'android'
+    ? `${RNFS.DownloadDirectoryPath}/Techsapphire`
+    : `${RNFS.DocumentDirectoryPath}/Techsapphire`;
+
+const TS_LOG_PATH = `${TS_PUBLIC_DIR}/app.log`;
+const TS_PREF_PUBLIC_PATH = `${TS_PUBLIC_DIR}/printer_prefs.json`;
+const TS_PREF_PRIVATE_PATH = `${RNFS.DocumentDirectoryPath}/printer_prefs.json`;
+
+async function tsEnsureDir() {
+  try { await RNFS.mkdir(TS_PUBLIC_DIR); } catch {}
+}
+
+async function tsMaybeAskLegacyStorageWrite() {
+  if (Platform.OS !== 'android') return true;
+  const api = typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10);
+  if (api <= 28) {
+    try {
+      const ok = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE
+      );
+      return ok === PermissionsAndroid.RESULTS.GRANTED;
+    } catch { return false; }
+  }
+  return true;
+}
+
+async function tsAppendLog(line) {
+  try {
+    await tsEnsureDir();
+    const stamp = new Date().toISOString();
+    const text = `[${stamp}] ${line}\n`;
+    const exists = await RNFS.exists(TS_LOG_PATH);
+    if (!exists) {
+      await RNFS.writeFile(TS_LOG_PATH, text, 'utf8');
+    } else {
+      await RNFS.appendFile(TS_LOG_PATH, text, 'utf8');
+    }
+  } catch {
+    // ignore logging failures
+  }
+}
+
+// Monkey-patch console.* to also write into app.log
+(() => {
+  const _log = console.log?.bind(console);
+  const _warn = console.warn?.bind(console);
+  const _err = console.error?.bind(console);
+
+  console.log = (...args) => {
+    try { _log?.(...args); } catch {}
+    try { tsAppendLog(`[LOG] ${args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`); } catch {}
+  };
+  console.warn = (...args) => {
+    try { _warn?.(...args); } catch {}
+    try { tsAppendLog(`[WARN] ${args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`); } catch {}
+  };
+  console.error = (...args) => {
+    try { _err?.(...args); } catch {}
+    try { tsAppendLog(`[ERROR] ${args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}`); } catch {}
+  };
+})();
+
+// First-run: note where logs go
+tsAppendLog('=== Techsapphire logger online ===');
+tsAppendLog(`Log file: ${TS_LOG_PATH}`);
+tsAppendLog(`Prefs (private): ${TS_PREF_PRIVATE_PATH}`);
+tsAppendLog(`Prefs (public copy): ${TS_PREF_PUBLIC_PATH}`);
+
+/* ============================================================
+   🔹 ADD-ON 2: Mirror prefs to visible folder (no logic change)
+   - Mirrors RNFS.DocumentDirectoryPath/printer_prefs.json
+     into Downloads/Techsapphire/printer_prefs.json (Android),
+     or Documents/Techsapphire on iOS.
+============================================================ */
+const __origWriteFile = RNFS.writeFile?.bind(RNFS);
+RNFS.writeFile = async (path, contents, enc = 'utf8') => {
+  const result = await __origWriteFile(path, contents, enc);
+  // If we just wrote the private prefs, mirror it to public path
+  try {
+    if (path === TS_PREF_PRIVATE_PATH) {
+      if (Platform.OS === 'android') {
+        const perm = await tsMaybeAskLegacyStorageWrite();
+        if (!perm) {
+          tsAppendLog('Mirror prefs skipped: no WRITE permission (Android <= 9).');
+          return result;
+        }
+      }
+      await tsEnsureDir();
+      await RNFS.writeFile(TS_PREF_PUBLIC_PATH, contents, 'utf8');
+      tsAppendLog(`Prefs mirrored to: ${TS_PREF_PUBLIC_PATH}`);
+    }
+  } catch (e) {
+    tsAppendLog(`Prefs mirror error: ${String(e?.message || e)}`);
+  }
+  return result;
+};
+
+// On boot, if private prefs already exist, mirror once to public path
+(async () => {
+  try {
+    const exists = await RNFS.exists(TS_PREF_PRIVATE_PATH);
+    if (exists) {
+      if (Platform.OS === 'android') {
+        const perm = await tsMaybeAskLegacyStorageWrite();
+        if (!perm) {
+          tsAppendLog('Startup prefs mirror skipped: no WRITE permission (Android <= 9).');
+          return;
+        }
+      }
+      await tsEnsureDir();
+      const txt = await RNFS.readFile(TS_PREF_PRIVATE_PATH, 'utf8');
+      await RNFS.writeFile(TS_PREF_PUBLIC_PATH, txt, 'utf8');
+      tsAppendLog('Startup prefs mirrored to public folder.');
+    } else {
+      tsAppendLog('No private prefs yet; will mirror on first save.');
+    }
+  } catch (e) {
+    tsAppendLog(`Startup mirror error: ${String(e?.message || e)}`);
+  }
+})();
+
+/* ============================================================
+   Your existing code continues below (unchanged logic)
+   + small LOCAL LOGO helper (folder asset -> base64)
+============================================================ */
+
+// --- LOCAL LOGO from folder (no JSON needed) ---
+const LOCAL_LOGO = require('../assets/logo.jpg'); // change to logo.png if needed
+
+const tryGetLocalLogoBase64 = async (): Promise<string | null> => {
+  try {
+    const src = Image.resolveAssetSource(LOCAL_LOGO);
+    const uri = src?.uri || '';
+
+    // Preferred: read file:// path
+    if (uri.startsWith('file://')) {
+      const b64 = await RNFS.readFile(uri.replace('file://', ''), 'base64');
+      if (b64?.length > 800) return b64;
+    }
+
+    // Android "asset:/" fallback
+    if (Platform.OS === 'android') {
+      const assetName = (uri.startsWith('asset:/') && uri.replace('asset:/', '')) || 'logo.jpg';
+      try {
+        const b64 = await RNFS.readFileAssets(assetName, 'base64');
+        if (b64?.length > 800) return b64;
+      } catch {}
+    }
+
+    // Last resort: try reading the raw uri
+    if (uri) {
+      try {
+        const b64 = await RNFS.readFile(uri, 'base64');
+        if (b64?.length > 800) return b64;
+      } catch {}
+    }
+  } catch {}
+  return null;
+};
 
 // ===== Helpers (shared) =====
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -234,7 +398,7 @@ const parseEsmartPosJson = (jsonString: string) => {
     }
   }
 
-  const footers: Array<{ text: string; align?: 'left'|'center'|'right' }> = [];
+  const footers: Array<{ text: string, align?: 'left' | 'center' | 'right' }> = [];
   (root.data || []).forEach((b: any) => {
     if (String(b?.type || '').toLowerCase() === 'footer') {
       const d = b.data || {};
@@ -279,6 +443,17 @@ const buildBytesFromJson = async (jsonString: string) => {
   const tinyBase64 = (b64?: string) => !b64 || stripDataUri(b64).length < 500;
   const logoUrl = (data.__root?.data || []).find((b: any) => String(b?.type || '').toLowerCase() === 'logo')?.data?.url;
 
+  // Prefer LOCAL asset if JSON didn't include a good base64
+  if (tinyBase64(data.logoBase64)) {
+    try {
+      const localB64 = await tryGetLocalLogoBase64();
+      if (localB64) {
+        data.logoBase64 = localB64;
+        console.log('[logo] using local asset base64, len=', localB64.length);
+      }
+    } catch {}
+  }
+
   if (logoUrl && tinyBase64(data.logoBase64)) {
     try {
       const downloaded = await loadImageUrlToBase64(logoUrl);
@@ -294,6 +469,29 @@ const buildBytesFromJson = async (jsonString: string) => {
   return buildReceiptBytes(data);
 };
 
+/* ---------------------------
+   PERSISTENCE (tiny, no new libs)
+----------------------------*/
+const PREF_FILE = `${RNFS.DocumentDirectoryPath}/printer_prefs.json`;
+
+const readPrefs = async () => {
+  try {
+    const exists = await RNFS.exists(PREF_FILE);
+    if (!exists) return {};
+    const txt = await RNFS.readFile(PREF_FILE, 'utf8');
+    return JSON.parse(txt || '{}');
+  } catch {
+    return {};
+  }
+};
+const writePrefs = async (partial) => {
+  try {
+    const curr = await readPrefs();
+    const next = { ...curr, ...partial };
+    await RNFS.writeFile(PREF_FILE, JSON.stringify(next), 'utf8');
+  } catch {}
+};
+
 // ===== Component =====
 export default function BluetoothPrinterScreen() {
   // --------- BLUETOOTH state ----------
@@ -303,12 +501,16 @@ export default function BluetoothPrinterScreen() {
   const [activeAddress, setActiveAddress] = useState<string | undefined>();
   const deviceRef = useRef<any>(null);
   const listenerRef = useRef<any>(null);
-  const rescanTimerRef = useRef<any>(null);
 
   // --------- 🌐 NETWORK state ----------
   const [ip, setIp] = useState('192.168.0.100');
   const [netConnected, setNetConnected] = useState(false);
   const socketRef = useRef<any>(null);
+
+  // (internal only – not shown)
+  const [savedBtName, setSavedBtName] = useState<string | undefined>();
+  const [savedBtAddress, setSavedBtAddress] = useState<string | undefined>();
+  const [savedIp, setSavedIp] = useState<string | undefined>();
 
   // live refs (for event listener)
   const connectedRef = useRef(false);
@@ -374,26 +576,100 @@ export default function BluetoothPrinterScreen() {
       try { await RNBluetoothClassic.cancelDiscovery?.(); } catch {}
     }
   };
+
+  // ---- ONE-SHOT auto reconnect on mount (no timer) ----
   useEffect(() => {
     let cancelled = false;
     const boot = async () => {
       if (cancelled) return;
+
       await ensureAdapterOn();
+
+      const prefs = await readPrefs().catch(() => ({}));
+      if (prefs?.ip && typeof prefs.ip === 'string') {
+        setIp(prefs.ip);
+        setSavedIp(prefs.ip);
+      }
+      if (prefs?.btAddress) {
+        setSavedBtAddress(prefs.btAddress);
+        if (prefs?.btName) setSavedBtName(prefs.btName);
+      }
+
       await startDiscovery();
-      if (cancelled) return;
-      rescanTimerRef.current = setInterval(async () => { if (!connectedRef.current) await startDiscovery(); }, 10000);
+
+      // Try network auto-connect once
+      if (prefs?.ip && !netConnectedRef.current) {
+        try {
+          const s = TcpSocket.createConnection({ port: 9100, host: prefs.ip, tls: false }, () => {
+            setNetConnected(true);
+            socketRef.current = s;
+          });
+          s.on('error', () => { try { s.destroy(); } catch {} });
+        } catch {}
+      }
+
+      // Try BT auto-reconnect (few quick retries inline)
+      if (prefs?.btAddress && typeof prefs.btAddress === 'string' && !connectedRef.current) {
+        setSelectedId(prefs.btAddress);
+        for (let i = 0; i < 5 && !connectedRef.current; i++) {
+          try {
+            let conn = null;
+            try { conn = await RNBluetoothClassic.connectToDevice(prefs.btAddress, { CONNECTOR_TYPE: 'rfcomm', secure: false }); } catch {}
+            if (!conn) { conn = await RNBluetoothClassic.connectToDevice(prefs.btAddress, { CONNECTOR_TYPE: 'rfcomm', secure: true }); }
+            if (conn) {
+              deviceRef.current = conn;
+              setActiveAddress(prefs.btAddress);
+              setConnected(true);
+              break;
+            }
+          } catch {}
+          await sleep(500);
+        }
+      }
     };
+
     boot();
     return () => {
       cancelled = true;
-      try { clearInterval(rescanTimerRef.current); } catch {}
       try { listenerRef.current?.remove?.(); } catch {}
       try { RNBluetoothClassic.cancelDiscovery?.(); } catch {}
       try { deviceRef.current?.disconnect(); } catch {}
-
-      // 🌐 NETWORK: cleanup socket
       try { socketRef.current?.destroy(); } catch {}
     };
+  }, []);
+
+  // ---- Foreground one-shot retry (not a timer) ----
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async (st) => {
+      if (st !== 'active') return;
+      try {
+        const prefs = await readPrefs();
+        // If BT not connected, try once
+        if (!connectedRef.current && prefs?.btAddress) {
+          try {
+            let conn = null;
+            try { conn = await RNBluetoothClassic.connectToDevice(prefs.btAddress, { CONNECTOR_TYPE: 'rfcomm', secure: false }); } catch {}
+            if (!conn) { conn = await RNBluetoothClassic.connectToDevice(prefs.btAddress, { CONNECTOR_TYPE: 'rfcomm', secure: true }); }
+            if (conn) {
+              deviceRef.current = conn;
+              setActiveAddress(prefs.btAddress);
+              setConnected(true);
+            }
+          } catch {}
+        }
+        // If NET not connected, try once
+        if (!netConnectedRef.current && prefs?.ip && !socketRef.current) {
+          try {
+            const s = TcpSocket.createConnection({ port: 9100, host: prefs.ip, tls: false }, () => {
+              setNetConnected(true);
+              socketRef.current = s;
+            });
+            s.on('error', () => { try { s.destroy(); } catch {} });
+          } catch {}
+        }
+      } catch {}
+    });
+    return () => sub.remove();
   }, []);
 
   const connectOrDisconnect = async () => {
@@ -416,7 +692,13 @@ export default function BluetoothPrinterScreen() {
       if (!conn) { conn = await RNBluetoothClassic.connectToDevice(address, { CONNECTOR_TYPE: 'rfcomm', secure: true }); }
       if (!conn) throw new Error('Connect failed');
       deviceRef.current = conn; setActiveAddress(address); setConnected(true);
-      await sleep(500);
+
+      // save for next launch
+      await writePrefs({ btAddress: address, btName: target.name || '' });
+      setSavedBtAddress(address);
+      setSavedBtName(target.name || '');
+
+      await sleep(300);
       Alert.alert('Connected', target.name ?? address);
     } catch (e: any) {
       setConnected(false); setActiveAddress(undefined); Alert.alert('Connect error', e?.message ?? String(e));
@@ -424,13 +706,13 @@ export default function BluetoothPrinterScreen() {
   };
   const quickReconnect = async (address: string) => {
     try { await RNBluetoothClassic.cancelDiscovery?.(); } catch {}
-    await sleep(200);
+    await sleep(150);
     try {
       let conn = null;
       try { conn = await RNBluetoothClassic.connectToDevice(address, { CONNECTOR_TYPE: 'rfcomm', secure: false }); } catch {}
       if (!conn) { conn = await RNBluetoothClassic.connectToDevice(address, { CONNECTOR_TYPE: 'rfcomm', secure: true }); }
       if (!conn) throw new Error('Reconnect failed');
-      deviceRef.current = conn; setConnected(true); await sleep(300); return true;
+      deviceRef.current = conn; setConnected(true); await sleep(200); return true;
     } catch { return false; }
   };
 
@@ -439,7 +721,7 @@ export default function BluetoothPrinterScreen() {
     if (!connectedRef.current || !address) { Alert.alert('Not connected', 'Connect to a printer first.'); return; }
     const trySend = async () => {
       try { await RNBluetoothClassic.cancelDiscovery?.(); } catch {}
-      await sleep(150);
+      await sleep(120);
       const bytes = await buildBytesFromJson(JSON.stringify(sampleReceiptJson));
       const ascii = bytesToBinaryString(bytes);
       await sendWithFallbacks(deviceRef.current, address, ascii, bytes);
@@ -468,8 +750,13 @@ export default function BluetoothPrinterScreen() {
     if (!ip.trim()) { Alert.alert('Enter IP', 'Type your printer IP address.'); return; }
 
     try {
-      const socket = TcpSocket.createConnection({ port: 9100, host: ip, tls: false }, () => {
+      const socket = TcpSocket.createConnection({ port: 9100, host: ip, tls: false }, async () => {
         setNetConnected(true);
+        socketRef.current = socket;
+
+        // save IP for next launch
+        await writePrefs({ ip });
+
         Alert.alert('Connected', `Network printer: ${ip}`);
       });
 
@@ -478,7 +765,6 @@ export default function BluetoothPrinterScreen() {
         Alert.alert('Network error', err?.message || String(err));
       });
 
-      socketRef.current = socket;
     } catch (e: any) {
       setNetConnected(false);
       Alert.alert('Connect error', e?.message ?? String(e));
@@ -552,9 +838,20 @@ export default function BluetoothPrinterScreen() {
     </TouchableOpacity>
   );
 
+  const connectionSummary =
+    connected && netConnected
+      ? 'Bluetooth + Network connected'
+      : connected
+      ? 'Bluetooth connected'
+      : netConnected
+      ? 'Network connected'
+      : 'Disconnected';
+
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.container}>
       <Text style={styles.h1}>Bluetooth Printer</Text>
+
+      {/* (No saved device/IP shown in UI, per your request) */}
 
       <Text style={styles.label}>Select Device</Text>
       <View style={styles.pickerWrap}>
@@ -621,9 +918,9 @@ export default function BluetoothPrinterScreen() {
       />
 
       <Text style={styles.status}>
-        Status:{' '}
+        Status{' '}
         <Text style={{ fontWeight: '700' }}>
-          {connected ? 'Bluetooth connected' : netConnected ? 'Network connected' : 'Disconnected'}
+          {connectionSummary}
         </Text>
       </Text>
 
@@ -638,36 +935,13 @@ export default function BluetoothPrinterScreen() {
 
 /* ---------- styles (UI only) ---------- */
 const styles = StyleSheet.create({
-  // make the panel fully transparent so the drawer/slider color shows through
-  scroll: {
-    backgroundColor: 'transparent',
-  },
-  container: {
-    padding: 20,
-    paddingBottom: 32,
-    backgroundColor: 'transparent',   // ← was a light white/lilac; now see drawer bg
-  },
+  scroll: { backgroundColor: 'transparent' },
+  container: { padding: 20, paddingBottom: 32, backgroundColor: 'transparent' },
   h1: { fontSize: 26, fontWeight: '700', color: '#111', marginBottom: 12 },
   h2: { fontSize: 22, fontWeight: '700', color: '#111', marginTop: 8, marginBottom: 8 },
-  label: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#5C4B7D',
-    marginTop: 6,
-    marginBottom: 6,
-  },
-  smallLabel: {
-    fontSize: 12,
-    color: '#7A7A8A',
-    marginTop: 10,
-    marginBottom: 4,
-  },
-  pickerWrap: {
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5DFF0',
-    marginBottom: 14,
-  },
-  // remove white fill + shadows from buttons so no white “card” is visible
+  label: { fontSize: 18, fontWeight: '700', color: '#5C4B7D', marginTop: 6, marginBottom: 6 },
+  smallLabel: { fontSize: 12, color: '#7A7A8A', marginTop: 10, marginBottom: 4 },
+  pickerWrap: { borderBottomWidth: 1, borderBottomColor: '#E5DFF0', marginBottom: 14 },
   roundBtn: {
     backgroundColor: 'transparent',
     borderRadius: 26,
@@ -690,11 +964,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     backgroundColor: 'transparent',
   },
-  divider: {
-    height: 1,
-    backgroundColor: '#E6DFF3',
-    marginVertical: 14,
-  },
+  divider: { height: 1, backgroundColor: '#E6DFF3', marginVertical: 14 },
   status: { marginTop: 16, fontSize: 18, color: '#222' },
   iosNote: { color: '#c00', marginTop: 12 },
 });

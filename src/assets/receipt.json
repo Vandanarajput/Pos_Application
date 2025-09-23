@@ -743,7 +743,7 @@
 		},
 		{
 			"type": "kitchen_print",
-			"printer_name": "XP-80",
+			"printer_name": "kitchen",
 			"individual_print": "0",
 			"data": {
 				"itemdata": [
