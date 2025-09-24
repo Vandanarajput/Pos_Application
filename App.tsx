@@ -52,6 +52,7 @@ async function readPrefs() {
     return {};
   }
 }
+
 async function writePrefs(partial) {
   try {
     const curr = await readPrefs();
@@ -74,14 +75,19 @@ function HomeScreen({ webUrl, setWebUrl, onReceipt, latestReceipt, refreshTick }
       if (!window.messageHandler) {
         window.messageHandler = {
           postMessage: function (msg) {
-            try { window.ReactNativeWebView.postMessage(msg); } catch (e) {}
+            try { 
+              console.log("Message received: ", msg); // Log the message to console
+              window.ReactNativeWebView.postMessage(msg); 
+            } catch (e) {}
           }
         };
       }
       // 🔸 ADDED: optional callback the app can call to notify the page
       if (!window.onNative) {
         window.onNative = function (payload) {
-          try { console.log('onNative:', payload); } catch (e) {}
+          try { 
+            console.log('onNative:', payload); // Log the native data to console
+          } catch (e) {}
         };
       }
     })();
@@ -104,6 +110,9 @@ function HomeScreen({ webUrl, setWebUrl, onReceipt, latestReceipt, refreshTick }
   const onWebMessage = async (e) => {
     let raw = e?.nativeEvent?.data;
     if (!raw) return;
+
+    // Log the message from the web
+    console.log("Received message from WebView: ", raw);
 
     // 🔸 ADDED: handle "esmartpos:..." command strings
     if (typeof raw === 'string' && raw.startsWith('esmartpos:')) {
@@ -261,8 +270,6 @@ export default function App() {
       <NavigationContainer>
         <Drawer.Navigator
           drawerContent={(p) => <BluetoothDrawerContent {...p} />}
-
-          // 🔹 Header styled & icons like your screenshot
           screenOptions={({ navigation }) => ({
             headerTitle: 'Techsapphire',
             headerTitleAlign: 'left',
@@ -281,8 +288,6 @@ export default function App() {
             headerTintColor: '#252525',
             drawerType: 'front',
             swipeEnabled: true,
-
-            // LEFT: Hamburger (opens drawer)
             headerLeft: () => (
               <TouchableOpacity
                 onPress={() => navigation.toggleDrawer()}
@@ -294,8 +299,6 @@ export default function App() {
                 <View style={[styles.burgerLine, { width: 22, marginTop: 3 }]} />
               </TouchableOpacity>
             ),
-
-            // RIGHT: Search, Refresh, Info (spacing & sizes like screenshot)
             headerRight: () => (
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 {/* Search (magnifier) */}
@@ -325,7 +328,6 @@ export default function App() {
                 refreshTick={refreshTick}
                 onReceipt={(json) => {
                   setLastReceipt(json);
-                  // Also push to printer as before
                   DeviceEventEmitter.emit('PRINT_JSON', json);
                 }}
               />
@@ -390,11 +392,7 @@ export default function App() {
               data={jsonLines}
               keyExtractor={(_, i) => String(i)}
               renderItem={({ item }) => (
-                <Text
-                  selectable
-                  allowFontScaling={false}
-                  style={styles.jsonLine}
-                >
+                <Text selectable allowFontScaling={false} style={styles.jsonLine}>
                   {item.length ? item : ' '}
                 </Text>
               )}

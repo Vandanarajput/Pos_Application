@@ -19,10 +19,9 @@ import {
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
-
-import sampleReceiptJson from '../assets/txt.json';
 import RNFS from 'react-native-fs';
 import TcpSocket from 'react-native-tcp-socket';
+import sampleReceiptJson from '../assets/txt.json';
 
 const ReceiptPrinterEncoder =
   require('@point-of-sale/receipt-printer-encoder').default ??
@@ -30,8 +29,6 @@ const ReceiptPrinterEncoder =
 
 /* ============================================================
    🔹 ADD-ON 1: File logger (console -> file mirror, no logic change)
-   - Android: /storage/emulated/0/Download/Techsapphire/app.log
-   - iOS:     <App>/Documents/Techsapphire/app.log (Xcode container)
 ============================================================ */
 const TS_PUBLIC_DIR =
   Platform.OS === 'android'
@@ -158,7 +155,7 @@ RNFS.writeFile = async (path, contents, enc = 'utf8') => {
 ============================================================ */
 
 // --- LOCAL LOGO from folder (no JSON needed) ---
-const LOCAL_LOGO = require('../assets/logo.jpg'); // change to logo.png if needed
+const LOCAL_LOGO = require('../assets/logo.png'); // change to logo.png if needed
 
 const tryGetLocalLogoBase64 = async (): Promise<string | null> => {
   try {
@@ -173,10 +170,10 @@ const tryGetLocalLogoBase64 = async (): Promise<string | null> => {
 
     // Android "asset:/" fallback
     if (Platform.OS === 'android') {
-      const assetName = (uri.startsWith('asset:/') && uri.replace('asset:/', '')) || 'logo.jpg';
+      const assetName = (uri.startsWith('asset:/') && uri.replace('asset:/', '')) || 'logo.png';
       try {
         const b64 = await RNFS.readFileAssets(assetName, 'base64');
-        if (b64?.length > 800) { console.log('[logo] read from asset:/', assetName); return b64; } // 🔧 CHANGE (log)
+        if (b64?.length > 800) { console.log('[logo] read from assets:/', assetName); return b64; } // 🔧 CHANGE (log)
       } catch {}
     }
 
@@ -320,10 +317,6 @@ const buildReceiptBytes = (data: {
   if (!logoPrinted) {
     for (let i = 0; i < reserveLogoLines; i++) enc.newline();
     console.warn('[logo] not printed; reserved', reserveLogoLines, 'lines');
-    // Optional placeholder box (uncomment if you want to see it):
-    // enc.align('center').line('┌──────────────────────────┐');
-    // for (let i = 0; i < reserveLogoLines - 2; i++) enc.align('center').line('│                          │');
-    // enc.align('center').line('└──────────────────────────┘').newline();
   }
 
   enc.align('center').bold(true).line(data.shopName || 'RECEIPT').bold(false); // <- shop name alignment
@@ -375,6 +368,8 @@ const buildReceiptBytes = (data: {
 
   return enc.encode();
 };
+
+
 
 // ---------- parse your JSON ----------
 const parseEsmartPosJson = (jsonString: string) => {

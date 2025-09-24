@@ -16,7 +16,7 @@
     "@react-navigation/native": "^7.1.17",
     "esc-pos-encoder": "^3.0.0",
     "react": "19.1.0",
-    "react-native": "0.81.4",
+    "react-native": "^0.81.4",
     "react-native-bluetooth-classic": "^1.73.0-rc.14",
     "react-native-fs": "^2.20.0",
     "react-native-gesture-handler": "^2.28.0",
