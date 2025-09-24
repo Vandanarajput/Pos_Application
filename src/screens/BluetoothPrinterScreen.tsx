@@ -104,9 +104,6 @@ tsAppendLog(`Prefs (public copy): ${TS_PREF_PUBLIC_PATH}`);
 
 /* ============================================================
    🔹 ADD-ON 2: Mirror prefs to visible folder (no logic change)
-   - Mirrors RNFS.DocumentDirectoryPath/printer_prefs.json
-     into Downloads/Techsapphire/printer_prefs.json (Android),
-     or Documents/Techsapphire on iOS.
 ============================================================ */
 const __origWriteFile = RNFS.writeFile?.bind(RNFS);
 RNFS.writeFile = async (path, contents, enc = 'utf8') => {
@@ -171,7 +168,7 @@ const tryGetLocalLogoBase64 = async (): Promise<string | null> => {
     // Preferred: read file:// path
     if (uri.startsWith('file://')) {
       const b64 = await RNFS.readFile(uri.replace('file://', ''), 'base64');
-      if (b64?.length > 800) return b64;
+      if (b64?.length > 800) { console.log('[logo] read from file://'); return b64; } // 🔧 CHANGE (log)
     }
 
     // Android "asset:/" fallback
@@ -179,7 +176,7 @@ const tryGetLocalLogoBase64 = async (): Promise<string | null> => {
       const assetName = (uri.startsWith('asset:/') && uri.replace('asset:/', '')) || 'logo.jpg';
       try {
         const b64 = await RNFS.readFileAssets(assetName, 'base64');
-        if (b64?.length > 800) return b64;
+        if (b64?.length > 800) { console.log('[logo] read from asset:/', assetName); return b64; } // 🔧 CHANGE (log)
       } catch {}
     }
 
@@ -187,10 +184,11 @@ const tryGetLocalLogoBase64 = async (): Promise<string | null> => {
     if (uri) {
       try {
         const b64 = await RNFS.readFile(uri, 'base64');
-        if (b64?.length > 800) return b64;
+        if (b64?.length > 800) { console.log('[logo] read from uri'); return b64; } // 🔧 CHANGE (log)
       } catch {}
     }
   } catch {}
+  console.warn('[logo] local asset not found or too small'); // 🔧 CHANGE (log)
   return null;
 };
 
@@ -290,6 +288,10 @@ const buildReceiptBytes = (data: {
   const preferredDots = width > 38 ? 576 : 384; // ~80mm vs ~58mm
   const clamp8 = (n: number) => n - (n % 8);
 
+  // 🔧 CHANGE: reserve space if logo can’t print
+  const reserveLogoLines = width > 38 ? 12 : 10; // tune as you like
+  let logoPrinted = false; // track success
+
   if (data.logoBase64) {
     const b64 = stripDataUri(data.logoBase64);
     if (!b64 || b64.length < 800) {
@@ -299,7 +301,9 @@ const buildReceiptBytes = (data: {
       let ok = false;
       for (let w = clamp8(preferredDots); w >= 128; w -= 8) {
         try {
-          enc.align('center').image(imgBytes, 'threshold', w).newline(); ok = true; break;
+          enc.align('center') // <- change alignment here for the logo if needed
+            .image(imgBytes, 'threshold', w)
+            .newline(); ok = true; break;
         } catch (e1) {
           try { enc.align('center').image(imgBytes, 'dither', w).newline(); ok = true; break; }
           catch (e2) {
@@ -308,11 +312,21 @@ const buildReceiptBytes = (data: {
           }
         }
       }
-      if (ok) console.log('[logo] printed');
+      if (ok) { console.log('[logo] printed'); logoPrinted = true; } // 🔧 CHANGE
     }
   }
 
-  enc.align('center').bold(true).line(data.shopName || 'RECEIPT').bold(false);
+  // 🔧 CHANGE: if logo didn’t print, keep the header layout stable
+  if (!logoPrinted) {
+    for (let i = 0; i < reserveLogoLines; i++) enc.newline();
+    console.warn('[logo] not printed; reserved', reserveLogoLines, 'lines');
+    // Optional placeholder box (uncomment if you want to see it):
+    // enc.align('center').line('┌──────────────────────────┐');
+    // for (let i = 0; i < reserveLogoLines - 2; i++) enc.align('center').line('│                          │');
+    // enc.align('center').line('└──────────────────────────┘').newline();
+  }
+
+  enc.align('center').bold(true).line(data.shopName || 'RECEIPT').bold(false); // <- shop name alignment
   (data.headerLines || []).forEach(l => enc.line(l));
   if (data.phone) enc.line(`Tel: ${data.phone}`);
   enc.newline();
@@ -450,6 +464,8 @@ const buildBytesFromJson = async (jsonString: string) => {
       if (localB64) {
         data.logoBase64 = localB64;
         console.log('[logo] using local asset base64, len=', localB64.length);
+      } else {
+        console.warn('[logo] no local asset available'); // 🔧 CHANGE (log)
       }
     } catch {}
   }

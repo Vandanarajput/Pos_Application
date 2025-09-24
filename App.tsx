@@ -65,6 +65,9 @@ function HomeScreen({ webUrl, setWebUrl, onReceipt, latestReceipt, refreshTick }
   const webRef = useRef(null);
   const [loading, setLoading] = useState(false);
 
+  // 🔸 ADDED: base for your eprint API
+  const EPRINT_BASE = 'https://esmartpos.com/eprint/posprint.php/eprint?';
+
   // Make window.messageHandler available to the page before it loads
   const injectedJS = `
     (function () {
@@ -75,15 +78,60 @@ function HomeScreen({ webUrl, setWebUrl, onReceipt, latestReceipt, refreshTick }
           }
         };
       }
+      // 🔸 ADDED: optional callback the app can call to notify the page
+      if (!window.onNative) {
+        window.onNative = function (payload) {
+          try { console.log('onNative:', payload); } catch (e) {}
+        };
+      }
     })();
     true;
   `;
 
+  // 🔸 ADDED: helper to send a response back into the web page
+  const sendBackToPage = (obj) => {
+    if (!webRef.current) return;
+    const js = `
+      try {
+        if (window.onNative) window.onNative(${JSON.stringify(obj)});
+      } catch (e) {}
+      true;
+    `;
+    webRef.current.injectJavaScript(js);
+  };
+
   // Receive messages from the web page (e.nativeEvent.data)
-  const onWebMessage = (e) => {
+  const onWebMessage = async (e) => {
     let raw = e?.nativeEvent?.data;
     if (!raw) return;
 
+    // 🔸 ADDED: handle "esmartpos:..." command strings
+    if (typeof raw === 'string' && raw.startsWith('esmartpos:')) {
+      try {
+        const queryString = raw.slice('esmartpos:'.length); // everything after "esmartpos:"
+        const url = EPRINT_BASE + queryString;
+
+        // Get receipt JSON from your API
+        const res = await fetch(url, { method: 'GET' });
+        const txt = await res.text();
+
+        // Try to parse JSON (if API returns JSON)
+        let payload = txt;
+        try { payload = JSON.parse(txt); } catch {}
+
+        // 1) Bubble up to App (which will EMIT to printer)
+        onReceipt?.(payload);
+
+        // 2) Tell the web page we’re done (optional UI feedback)
+        sendBackToPage({ ok: true, url, printed: true });
+      } catch (err) {
+        sendBackToPage({ ok: false, error: String(err?.message || err) });
+        Alert.alert('Print Error', String(err?.message || err));
+      }
+      return; // don't fall through
+    }
+
+    // Your existing flexible JSON pipeline
     let payload = raw;
     try { payload = JSON.parse(payload); } catch {}
     if (typeof payload === 'string') { try { payload = JSON.parse(payload); } catch {} }
@@ -107,9 +155,6 @@ function HomeScreen({ webUrl, setWebUrl, onReceipt, latestReceipt, refreshTick }
 
   return (
     <View style={{ flex: 1 }}>
-      {/* (intentionally no toolbar below navbar) */}
-
-      {/* WebView area (or totally blank view if no URL) */}
       {webUrl ? (
         <View style={{ flex: 1 }}>
           <WebView
@@ -132,7 +177,6 @@ function HomeScreen({ webUrl, setWebUrl, onReceipt, latestReceipt, refreshTick }
           )}
         </View>
       ) : (
-        // ⬇️ Plain, empty screen (no text, no hints)
         <View style={{ flex: 1, backgroundColor: '#fff' }} />
       )}
     </View>
@@ -245,7 +289,6 @@ export default function App() {
                 style={{ paddingHorizontal: 14, paddingVertical: 6 }}
                 accessibilityLabel="Open menu"
               >
-                {/* Draw three bars to mimic the system hamburger */}
                 <View style={styles.burgerLine} />
                 <View style={[styles.burgerLine, { width: 18, marginTop: 3 }]} />
                 <View style={[styles.burgerLine, { width: 22, marginTop: 3 }]} />
