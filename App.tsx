@@ -353,7 +353,10 @@ export default function App() {
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"
-              style={styles.input}
+              // style={styles.input}
+              style={[styles.input, { color: '#111', backgroundColor: '#fff' }]}
+              placeholderTextColor="#7A7A8A"
+              selectionColor="#a79fbdff"
             />
             <View style={styles.row}>
               <Button title="Cancel" onPress={onCancel} />

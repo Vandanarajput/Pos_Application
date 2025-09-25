@@ -869,16 +869,20 @@ export default function BluetoothPrinterScreen() {
         <Picker
           selectedValue={selectedId}
           onValueChange={(v) => setSelectedId(String(v))}
+          // dropdownIconColor="#7E6AA6"
           dropdownIconColor="#7E6AA6"
+          style={{ color: '#111', backgroundColor: 'transparent' }}
+
         >
           {devices.length === 0 ? (
-            <Picker.Item label="Searching for devices..." value="" />
+            <Picker.Item label="Searching for devices..." value="" color="#111"/>
           ) : (
             devices.map((d) => (
               <Picker.Item
                 key={(d.id ?? d.address) as string}
                 label={`${d.name ?? 'Unknown'} (${d.address ?? d.id})`}
                 value={(d.id ?? d.address) as string}
+                color="#111"
               />
             ))
           )}
